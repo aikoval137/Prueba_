@@ -1,4 +1,4 @@
-import os, re, ast, pickle, unicodedata, hashlib
+import os, re, ast, pickle, unicodedata
 from collections import Counter
 
 import numpy as np
@@ -10,7 +10,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CONFIG — ajusta las rutas según tu estructura de carpetas
+# CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 RUTA_MALLAS   = "tokenizado_cursos.csv"
 RUTA_OFERTAS  = "df_ofertas_1.csv"
@@ -312,7 +312,6 @@ def recomendar_cursos(online, gap_df, tfidf, X, excluir_titulos=None,
     return cand[["titulo","descripcion","portal","precio","url","score","gap_cubierto"]]
 
 def skills_de_cursos_completados(titulos, online):
-    """Extrae los tokens de los cursos online completados como skills extra."""
     skills = set()
     for titulo in titulos:
         fila = online[online["titulo"] == titulo]
@@ -375,39 +374,37 @@ with st.sidebar:
 
     st.divider()
     if st.button("🔄 Reiniciar", use_container_width=True):
+        por_llevar_backup = st.session_state.get("por_llevar", [])
         for k in list(st.session_state.keys()):
             del st.session_state[k]
+        st.session_state["por_llevar"] = por_llevar_backup
         st.rerun()
 
+# ── Resetear estado si cambia el perfil ───────────────────────────────────
 perfil_key = f"{univ}||{carrera}"
 if st.session_state.get("_perfil") != perfil_key:
     completados_backup = st.session_state.get("completados", set())
-    idx_backup         = st.session_state.get("idx_actual", 0)
-    por_llevar_backup  = st.session_state.get("por_llevar", [])   # ← NUEVO
-
+    por_llevar_backup  = st.session_state.get("por_llevar", [])
     for k in list(st.session_state.keys()):
         del st.session_state[k]
-
     st.session_state["_perfil"]     = perfil_key
     st.session_state["completados"] = completados_backup
-    st.session_state["idx_actual"]  = idx_backup
-    st.session_state["por_llevar"]  = por_llevar_backup            # ← NUEVO         
+    st.session_state["por_llevar"]  = por_llevar_backup
 
-# Inicializar estado
-if "completados"    not in st.session_state:
-    st.session_state.completados    = set()   # títulos de cursos online completados
-if "skills_malla"   not in st.session_state:
-    st.session_state.skills_malla   = set()   # skills de malla (no usadas en este flujo)
-if "recs"           not in st.session_state:
-    st.session_state.recs           = None
-if "gap_df"         not in st.session_state:
-    st.session_state.gap_df         = None
-if "idx_actual"     not in st.session_state:
-    st.session_state.idx_actual     = 0       # índice del curso que se está mostrando
-if "por_llevar"     not in st.session_state:  
-    st.session_state.por_llevar     = []  
+# ── Inicializar estado ────────────────────────────────────────────────────
+if "completados" not in st.session_state:
+    st.session_state.completados = set()
+if "recs"        not in st.session_state:
+    st.session_state.recs        = None
+if "gap_df"      not in st.session_state:
+    st.session_state.gap_df      = None
+if "idx_actual"  not in st.session_state:
+    st.session_state.idx_actual  = 0
+if "por_llevar"  not in st.session_state:
+    st.session_state.por_llevar  = []
+
 # ─────────────────────────────────────────────────────────────────────────────
-# CALCULAR / RECALCULAR RECOMENDACIONES
+# PIPELINE
 # ─────────────────────────────────────────────────────────────────────────────
 def ejecutar_pipeline():
     ofr = ofertas.copy()
@@ -415,25 +412,24 @@ def ejecutar_pipeline():
         ofr = ofr[ofr["Nivel"].isin(niveles_sel)].reset_index(drop=True)
     ofr_rel = filtrar_ofertas_por_carrera(ofr, carrera, modelo)
     demanda = construir_demanda(ofr_rel)
-
-    # Skills del alumno = tokens de todos los cursos online ya completados
     skills_online = skills_de_cursos_completados(st.session_state.completados, online)
-
     gap_df = calcular_gap(demanda, sorted(skills_online), modelo)
     recs   = recomendar_cursos(
         online, gap_df, tfidf, X,
         excluir_titulos=st.session_state.completados,
         n_cursos=n_cursos,
     )
-    st.session_state.gap_df    = gap_df
-    st.session_state.recs      = recs
-    
-# Calcular al arrancar (si no hay resultados aún)
+    st.session_state.gap_df = gap_df
+    st.session_state.recs   = recs
+
+# Calcular al arrancar
 if st.session_state.recs is None:
     with st.spinner("Calculando recomendaciones…"):
-        ejecutar_pipeline()  
+        ejecutar_pipeline()
+    # NO tocar idx_actual aquí — ya está en 0 por defecto
+
 # ─────────────────────────────────────────────────────────────────────────────
-# MOSTRAR MÉTRICAS DEL GAP
+# MÉTRICAS
 # ─────────────────────────────────────────────────────────────────────────────
 gap_df = st.session_state.gap_df
 recs   = st.session_state.recs
@@ -441,11 +437,10 @@ recs   = st.session_state.recs
 if gap_df is not None:
     n_gap  = int(gap_df["es_gap"].sum())
     n_comp = len(st.session_state.completados)
-
     m1, m2, m3 = st.columns(3)
-    m1.metric("Skills en el GAP",        n_gap)
+    m1.metric("Skills en el GAP",         n_gap)
     m2.metric("Cursos online completados", n_comp)
-    m3.metric("Cursos recomendados",      len(recs) if recs is not None and not recs.empty else 0)
+    m3.metric("Cursos recomendados",       len(recs) if recs is not None and not recs.empty else 0)
 
     with st.expander("🔍 Ver top habilidades del GAP"):
         top = gap_df[gap_df["es_gap"]].head(12)[["habilidad","demanda","cobertura","peso_gap"]]
@@ -455,38 +450,40 @@ if gap_df is not None:
 st.divider()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TARJETAS DE CURSOS — UNA A LA VEZ
+# TARJETAS — UNA A LA VEZ
 # ─────────────────────────────────────────────────────────────────────────────
 if recs is None or recs.empty:
     st.success("🎉 ¡No hay más cursos que recomendar para este GAP! Prueba cambiando los filtros.")
     st.stop()
 
-idx     = st.session_state.idx_actual
-total   = len(recs)
+idx   = st.session_state.idx_actual
+total = len(recs)
 
+# ── PANTALLA FINAL ────────────────────────────────────────────────────────
 if idx >= total:
-    st.write("por_llevar:", st.session_state.get("por_llevar"))
-    st.write("completados:", st.session_state.get("completados"))
     st.success("🎉 Revisaste todos los cursos recomendados.")
 
-    # ── Consolidado ───────────────────────────────────────────────────────
-    if st.session_state.por_llevar:
+    lista = st.session_state.por_llevar
+    if lista:
         st.markdown("### 📚 Tu lista de cursos por llevar")
-        for i, c in enumerate(st.session_state.por_llevar, 1):
+        for i, c in enumerate(lista, 1):
             portal_badge = (
                 '<span class="pill pill-c">🟦 Coursera</span>'
-                if "coursera" in c["portal"].lower()
+                if "coursera" in str(c.get("portal","")).lower()
                 else '<span class="pill pill-u">🟧 Udemy</span>'
             )
+            precio_val   = str(c.get("precio","No especificado"))
             precio_badge = (
                 '<span class="pill pill-p">🆓 Gratis</span>'
-                if c["precio"].lower() == "gratis"
-                else f'<span class="pill" style="background:#f1f5f9;color:#475569;">💰 {c["precio"]}</span>'
+                if precio_val.lower() == "gratis"
+                else f'<span class="pill" style="background:#f1f5f9;color:#475569;">💰 {precio_val}</span>'
             )
-            link_html = f'<a href="{c["url"]}" target="_blank">🔗 Ver curso</a>' if c["url"] else ""
+            url_c      = str(c.get("url",""))
+            link_html  = f'<a href="{url_c}" target="_blank">🔗 Ver curso</a>' if url_c else ""
+            gap_cub_c  = str(c.get("gap_cub","—"))
             skills_html = "".join(
                 f'<span class="pill pill-g">{s}</span>'
-                for s in c["gap_cub"].split(", ") if s and s != "—"
+                for s in gap_cub_c.split(", ") if s and s != "—"
             )
             st.markdown(f"""
 <div class="card">
@@ -498,97 +495,96 @@ if idx >= total:
 </div>
 """, unsafe_allow_html=True)
 
-        # Botón para limpiar la lista
         if st.button("🗑️ Limpiar lista"):
             st.session_state.por_llevar = []
             st.rerun()
     else:
-        st.info("No guardaste ningún curso en tu lista.")
+        st.info("No guardaste ningún curso en tu lista (usaste solo el botón ✅).")
 
     if st.button("🔁 Calcular nuevas recomendaciones"):
+        st.session_state.recs      = None
+        st.session_state.gap_df    = None
+        st.session_state.idx_actual = 0
         with st.spinner("Recalculando…"):
             ejecutar_pipeline()
         st.rerun()
     st.stop()
 
-row = recs.iloc[idx]
-
+# ── TARJETA ACTUAL ────────────────────────────────────────────────────────
+row     = recs.iloc[idx]
 titulo  = row["titulo"]
 portal  = str(row.get("portal",""))
-precio  = row.get("precio","No especificado")
+precio  = str(row.get("precio","No especificado"))
 url     = str(row.get("url",""))
 score   = float(row.get("score", 0))
-gap_cub = row.get("gap_cubierto","—")
+gap_cub = str(row.get("gap_cubierto","—"))
 desc    = str(row.get("descripcion",""))
 
-# Badge de portal
-if "coursera" in portal.lower():
-    badge_portal = '<span class="pill pill-c">🟦 Coursera</span>'
-else:
-    badge_portal = '<span class="pill pill-u">🟧 Udemy</span>'
-
-# Badge de precio
-if precio.lower() == "gratis":
-    badge_precio = '<span class="pill pill-p">🆓 Gratis</span>'
-else:
-    badge_precio = f'<span class="pill" style="background:#f1f5f9;color:#475569;">💰 {precio}</span>'
-
-link_html = f'<a href="{url}" target="_blank">🔗 Ver curso</a>' if url else ""
-
-pct = int(score * 100)
+badge_portal = (
+    '<span class="pill pill-c">🟦 Coursera</span>'
+    if "coursera" in portal.lower()
+    else '<span class="pill pill-u">🟧 Udemy</span>'
+)
+badge_precio = (
+    '<span class="pill pill-p">🆓 Gratis</span>'
+    if precio.lower() == "gratis"
+    else f'<span class="pill" style="background:#f1f5f9;color:#475569;">💰 {precio}</span>'
+)
+link_html   = f'<a href="{url}" target="_blank">🔗 Ver curso</a>' if url else ""
+pct         = int(score * 100)
 skills_html = "".join(
     f'<span class="pill pill-g">{s}</span>'
     for s in gap_cub.split(", ") if s and s != "—"
 )
 
-# Progreso
 st.markdown(f"**Curso {idx + 1} de {total}**")
 st.progress((idx + 1) / total)
 
-# Tarjeta
 st.markdown(f"""
 <div class="card">
   <h3>{titulo}</h3>
-  <div style="margin:6px 0 10px;">
-    {badge_portal} {badge_precio} {link_html}
-  </div>
+  <div style="margin:6px 0 10px;">{badge_portal} {badge_precio} {link_html}</div>
   <div class="bar-bg"><div class="bar-fg" style="width:{pct}%"></div></div>
   <span style="font-size:0.75rem;color:#64748b;">Relevancia para tu GAP: {score:.2f}</span>
   <p style="margin:10px 0 6px;font-size:0.85rem;color:#334155;">{desc[:350]}…</p>
-  <div style="margin-top:8px;"><strong style="font-size:0.8rem;">Habilidades que cubre:</strong><br/>{skills_html if skills_html else '<span style="color:#94a3b8;font-size:0.8rem;">—</span>'}</div>
+  <div style="margin-top:8px;"><strong style="font-size:0.8rem;">Habilidades que cubre:</strong><br/>
+  {skills_html if skills_html else '<span style="color:#94a3b8;font-size:0.8rem;">—</span>'}
+  </div>
 </div>
 """, unsafe_allow_html=True)
 
-# ── Botones de acción ──────────────────────────────────────────────────────
+# ── Botones ───────────────────────────────────────────────────────────────
 st.markdown("#### ¿Ya conoces este curso o lo completaste?")
 col_si, col_no = st.columns(2)
 
 with col_si:
     if st.button("✅ Ya lo sé / lo completé → siguiente", use_container_width=True, type="primary"):
         st.session_state.completados.add(titulo)
+        idx_antes = st.session_state.idx_actual
         with st.spinner("Actualizando recomendaciones…"):
             ejecutar_pipeline()
         nuevo_total = len(st.session_state.recs) if st.session_state.recs is not None else 0
-        # Avanzar al siguiente, no quedarse en el mismo índice
-        st.session_state.idx_actual = min(st.session_state.idx_actual, nuevo_total)
+        # ── FIX CLAVE: avanzar al siguiente, no quedarse en el mismo ──
+        # Si el curso desapareció de recs (fue excluido), el índice ya apunta
+        # al siguiente. Si no desapareció, hay que avanzar uno más.
+        st.session_state.idx_actual = min(idx_antes + 1, nuevo_total)
         st.rerun()
 
 with col_no:
     if st.button("➡️ No lo conozco → guardar y ver siguiente", use_container_width=True):
-        # Guardar info del curso si aún no está en la lista
         ya_guardado = any(c["titulo"] == titulo for c in st.session_state.por_llevar)
         if not ya_guardado:
             st.session_state.por_llevar.append({
-                "titulo":    titulo,
-                "portal":    portal,
-                "precio":    precio,
-                "url":       url,
-                "gap_cub":   gap_cub,
+                "titulo":  titulo,
+                "portal":  portal,
+                "precio":  precio,
+                "url":     url,
+                "gap_cub": gap_cub,
             })
         st.session_state.idx_actual += 1
         st.rerun()
 
-# ── Lista de completados ───────────────────────────────────────────────────
+# ── Lista de completados (sidebar inferior) ───────────────────────────────
 if st.session_state.completados:
     st.divider()
     with st.expander(f"📋 Cursos completados en esta sesión ({len(st.session_state.completados)})"):
