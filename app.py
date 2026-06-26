@@ -17,9 +17,9 @@ RUTA_OFERTAS  = "df_ofertas_1.csv"
 RUTA_ONLINE   = "palabras_3.csv"
 RUTA_COURSERA = "coursera_cursos_v5.csv"
 RUTA_UDEMY    = "udemy_cursos_playwright_3.csv"
-RUTA_W2V      = "word2vec.model"
-RUTA_TFIDF    = "tfidf.pkl"
-RUTA_TFIDF_X  = "tfidf_X.npz"
+RUTA_W2V      = "modelos/word2vec.model"
+RUTA_TFIDF    = "modelos/tfidf.pkl"
+RUTA_TFIDF_X  = "modelos/tfidf_X.npz"
 os.makedirs("modelos", exist_ok=True)
 
 PORTAL_EMOJI = {"Coursera": "🟦", "Udemy": "🟧"}
