@@ -1,8 +1,3 @@
-"""
-app.py  ·  Recomendador de Cursos por GAP de Habilidades
-Ejecutar:  streamlit run app.py
-"""
-
 import os, re, ast, pickle, unicodedata, hashlib
 from collections import Counter
 
