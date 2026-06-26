@@ -403,7 +403,8 @@ if "gap_df"         not in st.session_state:
     st.session_state.gap_df         = None
 if "idx_actual"     not in st.session_state:
     st.session_state.idx_actual     = 0       # índice del curso que se está mostrando
-
+if "por_llevar"     not in st.session_state:  
+    st.session_state.por_llevar     = []  
 # ─────────────────────────────────────────────────────────────────────────────
 # CALCULAR / RECALCULAR RECOMENDACIONES
 # ─────────────────────────────────────────────────────────────────────────────
@@ -465,6 +466,43 @@ total   = len(recs)
 
 if idx >= total:
     st.success("🎉 Revisaste todos los cursos recomendados.")
+
+    # ── Consolidado ───────────────────────────────────────────────────────
+    if st.session_state.por_llevar:
+        st.markdown("### 📚 Tu lista de cursos por llevar")
+        for i, c in enumerate(st.session_state.por_llevar, 1):
+            portal_badge = (
+                '<span class="pill pill-c">🟦 Coursera</span>'
+                if "coursera" in c["portal"].lower()
+                else '<span class="pill pill-u">🟧 Udemy</span>'
+            )
+            precio_badge = (
+                '<span class="pill pill-p">🆓 Gratis</span>'
+                if c["precio"].lower() == "gratis"
+                else f'<span class="pill" style="background:#f1f5f9;color:#475569;">💰 {c["precio"]}</span>'
+            )
+            link_html = f'<a href="{c["url"]}" target="_blank">🔗 Ver curso</a>' if c["url"] else ""
+            skills_html = "".join(
+                f'<span class="pill pill-g">{s}</span>'
+                for s in c["gap_cub"].split(", ") if s and s != "—"
+            )
+            st.markdown(f"""
+<div class="card">
+  <h3>{i}. {c["titulo"]}</h3>
+  <div style="margin:6px 0 8px;">{portal_badge} {precio_badge} {link_html}</div>
+  <div><strong style="font-size:0.8rem;">Habilidades que cubre:</strong><br/>
+  {skills_html if skills_html else '<span style="color:#94a3b8;font-size:0.8rem;">—</span>'}
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+        # Botón para limpiar la lista
+        if st.button("🗑️ Limpiar lista"):
+            st.session_state.por_llevar = []
+            st.rerun()
+    else:
+        st.info("No guardaste ningún curso en tu lista.")
+
     if st.button("🔁 Calcular nuevas recomendaciones"):
         with st.spinner("Recalculando…"):
             ejecutar_pipeline()
@@ -535,6 +573,16 @@ with col_si:
 
 with col_no:
     if st.button("➡️ No lo conozco → guardar y ver siguiente", use_container_width=True):
+        # Guardar info del curso si aún no está en la lista
+        ya_guardado = any(c["titulo"] == titulo for c in st.session_state.por_llevar)
+        if not ya_guardado:
+            st.session_state.por_llevar.append({
+                "titulo":    titulo,
+                "portal":    portal,
+                "precio":    precio,
+                "url":       url,
+                "gap_cub":   gap_cub,
+            })
         st.session_state.idx_actual += 1
         st.rerun()
 
