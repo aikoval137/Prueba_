@@ -1,4 +1,9 @@
-import os, re, ast, pickle, unicodedata
+"""
+app.py  ·  Recomendador de Cursos por GAP de Habilidades
+Ejecutar:  streamlit run app.py
+"""
+
+import os, re, ast, pickle, unicodedata, hashlib
 from collections import Counter
 
 import numpy as np
@@ -10,10 +15,10 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CONFIG
+# CONFIG — ajusta las rutas según tu estructura de carpetas
 # ─────────────────────────────────────────────────────────────────────────────
 RUTA_MALLAS   = "tokenizado_cursos.csv"
-RUTA_OFERTAS  = "df_ofertas_1.csv"
+RUTA_OFERTAS  = "df_ofertas_laborales.csv"
 RUTA_ONLINE   = "palabras_3.csv"
 RUTA_COURSERA = "coursera_cursos_v5.csv"
 RUTA_UDEMY    = "udemy_cursos_playwright_3.csv"
@@ -22,10 +27,8 @@ RUTA_TFIDF    = "modelos/tfidf.pkl"
 RUTA_TFIDF_X  = "modelos/tfidf_X.npz"
 os.makedirs("modelos", exist_ok=True)
 
-PORTAL_EMOJI = {"Coursera": "🟦", "Udemy": "🟧"}
-
 # ─────────────────────────────────────────────────────────────────────────────
-# UTILIDADES DE TEXTO  (idénticas al notebook)
+# UTILIDADES DE TEXTO
 # ─────────────────────────────────────────────────────────────────────────────
 def quitar_acentos(texto):
     nfkd = unicodedata.normalize("NFKD", str(texto))
@@ -99,7 +102,7 @@ TOKENS_NO_TECH = {
     "ecologia","responsabilidad","salud","medicina","enfermeria","nutricion",
     "nivelacion","deportes","arte","musica","teatro",
 }
-SEMILLAS_TECH  = [
+SEMILLAS_TECH   = [
     "python","sql","datos","algoritmos","software","redes","seguridad","cloud",
     "programacion","sistemas","machine_learning","base_datos","desarrollo","automatizacion",
 ]
@@ -111,7 +114,7 @@ PATRON_IDIOMAS  = re.compile(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# VECTORES Y SIMILITUD
+# VECTORES
 # ─────────────────────────────────────────────────────────────────────────────
 def vec(tokens, modelo):
     vs = [modelo.wv[t] for t in tokens if t in modelo.wv]
@@ -124,7 +127,7 @@ def cos(a, b):
     return float(np.dot(a, b) / (na * nb)) if na > 0 and nb > 0 else 0.0
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CARGA Y ENTRENAMIENTO  (cacheado: solo corre una vez por sesión)
+# CARGA (cacheada)
 # ─────────────────────────────────────────────────────────────────────────────
 def parsear_precio(valor):
     if not isinstance(valor, str) or not valor.strip():
@@ -140,9 +143,8 @@ def parsear_precio(valor):
             pass
     return valor.strip()
 
-@st.cache_resource(show_spinner="Cargando datos y modelos…")
+@st.cache_resource(show_spinner="Cargando datos y modelos… (solo ocurre una vez)")
 def cargar_todo():
-    # Mallas
     mallas = pd.read_csv(RUTA_MALLAS).rename(columns={"Unnamed: 0": "id"})
     mallas["tokens_nombre"] = mallas["tokens"].apply(
         lambda v: limpiar_tokens(parse_lista(v), stop=STOP_CURSO)
@@ -151,7 +153,6 @@ def cargar_todo():
         lambda t: bool(set(t) & TOKENS_NO_TECH)
     )
 
-    # Ofertas
     ofertas = pd.read_csv(RUTA_OFERTAS)
     ofertas["hab_tokens"] = ofertas["habilidades"].apply(parse_lista)
     ofertas["hab_tokens"] = ofertas["hab_tokens"].apply(
@@ -159,7 +160,6 @@ def cargar_todo():
     )
     ofertas = ofertas[ofertas["hab_tokens"].map(len) > 0].reset_index(drop=True)
 
-    # Cursos online
     online = pd.read_csv(RUTA_ONLINE, sep="|").rename(
         columns={"texto_consolidado": "descripcion", "fuente": "portal"}
     )
@@ -179,35 +179,28 @@ def cargar_todo():
         lambda t: bool(PATRON_IDIOMAS.search(t)))].reset_index(drop=True)
 
     # Word2Vec
-    def entrenar_w2v():
-        corpus  = list(online["tokens"]) + list(ofertas["hab_tokens"]) + list(mallas["tokens_nombre"])
-        corpus  = [d for d in corpus if d]
-        return Word2Vec(sentences=corpus, vector_size=100, window=5,
-                        min_count=2, sg=1, workers=4, epochs=20, seed=42)
-
     if os.path.exists(RUTA_W2V):
         modelo = Word2Vec.load(RUTA_W2V)
     else:
-        modelo = entrenar_w2v()
+        corpus  = list(online["tokens"]) + list(ofertas["hab_tokens"]) + list(mallas["tokens_nombre"])
+        corpus  = [d for d in corpus if d]
+        modelo  = Word2Vec(sentences=corpus, vector_size=100, window=5,
+                           min_count=2, sg=1, workers=4, epochs=20, seed=42)
         modelo.save(RUTA_W2V)
 
-    # Filtro 2: similitud coseno con perfil tech
-    sem_en_vocab = [s for s in SEMILLAS_TECH if s in modelo.wv]
-    v_tech = np.mean([modelo.wv[s] for s in sem_en_vocab], axis=0)
+    # Filtro tech
+    sem_ok = [s for s in SEMILLAS_TECH if s in modelo.wv]
+    v_tech = np.mean([modelo.wv[s] for s in sem_ok], axis=0)
     cand_f1 = mallas[~mallas["es_no_tech"] & (mallas["tokens_nombre"].map(len) > 0)].copy()
-    cand_f1["sim_tech"] = cand_f1["tokens_nombre"].apply(
-        lambda t: cos(vec(t, modelo), v_tech)
-    )
+    cand_f1["sim_tech"] = cand_f1["tokens_nombre"].apply(lambda t: cos(vec(t, modelo), v_tech))
     cursos_tech = set(cand_f1[cand_f1["sim_tech"] >= UMBRAL_SIM_TECH]["curso"])
     mallas["es_tech"] = mallas["curso"].isin(cursos_tech)
 
-    # Habilidades válidas
     freq_hab = Counter()
     for toks in ofertas["hab_tokens"]:
         freq_hab.update(set(toks))
     habilidades_validas = [h for h, n in freq_hab.items() if n >= 5 and h in modelo.wv]
 
-    # Skills predichos
     def predecir_skills(tokens_curso):
         v_curso = vec(tokens_curso, modelo)
         if v_curso is None:
@@ -234,7 +227,7 @@ def cargar_todo():
     return mallas, ofertas, online, modelo, habilidades_validas, tfidf, X
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PIPELINE (idéntico al notebook)
+# PIPELINE
 # ─────────────────────────────────────────────────────────────────────────────
 def filtrar_ofertas_por_carrera(ofertas, carrera, modelo, top_pct=0.5):
     carrera_tokens = limpiar_tokens(quitar_acentos(carrera).lower().split())
@@ -269,10 +262,6 @@ def calcular_gap(demanda, tokens_cubiertos, modelo, umbral=0.65):
 
 def recomendar_cursos(online, gap_df, tfidf, X, excluir_titulos=None,
                       n_cursos=5, top_k_gap=40, n_candidatos=150):
-    """
-    TF-IDF + coseno + MMR.
-    excluir_titulos: set de títulos que el usuario ya marcó como completados.
-    """
     excluir_titulos = excluir_titulos or set()
     gap = gap_df[gap_df["es_gap"]].sort_values("peso_gap", ascending=False)
     if gap.empty:
@@ -290,8 +279,6 @@ def recomendar_cursos(online, gap_df, tfidf, X, excluir_titulos=None,
     idx  = np.argsort(relevancia)[::-1][:M]
     cand = online.iloc[idx].copy().reset_index(drop=True)
     cand["relevancia"] = relevancia[idx]
-
-    # Excluir cursos ya completados
     cand = cand[~cand["titulo"].isin(excluir_titulos)].reset_index(drop=True)
     if cand.empty:
         return pd.DataFrame()
@@ -329,304 +316,231 @@ def recomendar_cursos(online, gap_df, tfidf, X, excluir_titulos=None,
     )
     return cand[["titulo","descripcion","portal","precio","url","score","gap_cubierto"]]
 
-# ─────────────────────────────────────────────────────────────────────────────
-# APP  STREAMLIT
-# ─────────────────────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="Recomendador de Cursos",
-    page_icon="🎓",
-    layout="wide",
-)
+def skills_de_cursos_completados(titulos, online):
+    """Extrae los tokens de los cursos online completados como skills extra."""
+    skills = set()
+    for titulo in titulos:
+        fila = online[online["titulo"] == titulo]
+        if not fila.empty:
+            skills.update(fila.iloc[0]["tokens"])
+    return skills
 
-# CSS mínimo
+# ─────────────────────────────────────────────────────────────────────────────
+# APP
+# ─────────────────────────────────────────────────────────────────────────────
+st.set_page_config(page_title="Recomendador de Cursos", page_icon="🎓", layout="wide")
+
 st.markdown("""
 <style>
 .card {
-    background: #f8fafc;
     border: 1px solid #e2e8f0;
     border-radius: 12px;
-    padding: 1rem 1.25rem;
-    margin-bottom: 0.75rem;
+    padding: 1.1rem 1.3rem;
+    margin-bottom: 1rem;
+    background: #f8fafc;
 }
-.card-done {
-    background: #f0fdf4;
-    border-color: #86efac;
-    opacity: 0.75;
-}
-.badge {
+.card h3 { margin: 0 0 4px; font-size: 1.05rem; }
+.pill {
     display: inline-block;
-    padding: 2px 8px;
+    padding: 2px 10px;
     border-radius: 999px;
     font-size: 0.72rem;
     font-weight: 600;
     margin-right: 4px;
 }
-.badge-coursera { background:#dbeafe; color:#1d4ed8; }
-.badge-udemy    { background:#ffedd5; color:#c2410c; }
-.badge-gap      { background:#f3e8ff; color:#7c3aed; }
-.score-bar-wrap { height:6px; background:#e2e8f0; border-radius:3px; margin:6px 0 4px; }
-.score-bar      { height:6px; background:#6366f1; border-radius:3px; }
+.pill-c  { background:#dbeafe; color:#1d4ed8; }
+.pill-u  { background:#ffedd5; color:#c2410c; }
+.pill-g  { background:#f3e8ff; color:#7c3aed; }
+.pill-p  { background:#dcfce7; color:#166534; }
+.bar-bg  { height:5px; background:#e2e8f0; border-radius:3px; margin:6px 0 2px; }
+.bar-fg  { height:5px; background:#6366f1; border-radius:3px; }
 </style>
 """, unsafe_allow_html=True)
 
-# Título
 st.title("🎓 Recomendador de Cursos por Brecha de Habilidades")
-st.caption("Encuentra los cursos online que cierran el GAP entre lo que sabes y lo que pide el mercado.")
+st.caption("Selecciona tu universidad y carrera, y te recomendamos cursos online para cerrar tu GAP con el mercado laboral.")
 
-# ── Carga de recursos ──────────────────────────────────────────────────────
+# ── Cargar recursos ────────────────────────────────────────────────────────
 mallas, ofertas, online, modelo, habilidades_validas, tfidf, X = cargar_todo()
 
-combos = (mallas.groupby(["universidad","carrera"])
-          .size().reset_index(name="n_cursos"))
+combos        = mallas.groupby(["universidad","carrera"]).size().reset_index(name="n")
 universidades = sorted(combos["universidad"].unique())
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SIDEBAR: Selección de perfil
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Sidebar ────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ Tu perfil")
-
-    univ = st.selectbox("Universidad", universidades)
+    univ    = st.selectbox("Universidad", universidades)
     carreras_disp = sorted(combos[combos["universidad"] == univ]["carrera"].tolist())
     carrera = st.selectbox("Carrera", carreras_disp)
 
     st.divider()
-    niveles_opciones = sorted(ofertas["Nivel"].dropna().unique().tolist())
-    niveles_sel = st.multiselect(
-        "Nivel de oferta laboral",
-        options=niveles_opciones,
-        default=niveles_opciones,
-        help="Filtra las ofertas que definen la demanda del mercado.",
-    )
-    n_cursos = st.slider("Cursos a recomendar", 3, 10, 5)
+    niveles_opc = sorted(ofertas["Nivel"].dropna().unique().tolist())
+    niveles_sel = st.multiselect("Nivel de oferta laboral", niveles_opc, default=niveles_opc)
+    n_cursos    = st.slider("Cursos a recomendar", 3, 10, 5)
 
     st.divider()
-    if st.button("🔄 Reiniciar todo", use_container_width=True):
-        for k in ["skills_marcadas","cursos_completados","recs","gap_df","info"]:
-            st.session_state.pop(k, None)
+    if st.button("🔄 Reiniciar", use_container_width=True):
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
         st.rerun()
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ESTADO DE SESIÓN
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Resetear estado si cambia el perfil ───────────────────────────────────
 perfil_key = f"{univ}||{carrera}"
-if st.session_state.get("_perfil_key") != perfil_key:
-    for k in ["skills_marcadas","cursos_completados","recs","gap_df","info"]:
-        st.session_state.pop(k, None)
-    st.session_state["_perfil_key"] = perfil_key
+if st.session_state.get("_perfil") != perfil_key:
+    for k in list(st.session_state.keys()):
+        del st.session_state[k]
+    st.session_state["_perfil"] = perfil_key
 
-if "skills_marcadas"    not in st.session_state:
-    st.session_state.skills_marcadas    = set()
-if "cursos_completados" not in st.session_state:
-    st.session_state.cursos_completados = set()
+# Inicializar estado
+if "completados"    not in st.session_state:
+    st.session_state.completados    = set()   # títulos de cursos online completados
+if "skills_malla"   not in st.session_state:
+    st.session_state.skills_malla   = set()   # skills de malla (no usadas en este flujo)
+if "recs"           not in st.session_state:
+    st.session_state.recs           = None
+if "gap_df"         not in st.session_state:
+    st.session_state.gap_df         = None
+if "idx_actual"     not in st.session_state:
+    st.session_state.idx_actual     = 0       # índice del curso que se está mostrando
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PASO 1: Malla universitaria — checkboxes de skills
+# CALCULAR / RECALCULAR RECOMENDACIONES
 # ─────────────────────────────────────────────────────────────────────────────
-sub_malla = (mallas[(mallas["universidad"] == univ) & (mallas["carrera"] == carrera)]
-             .copy())
-sub_tech  = sub_malla[sub_malla["skills_predichos"].map(len) > 0].sort_values(
-    ["ciclo","curso"] if "ciclo" in sub_malla.columns else ["curso"]
-)
+def ejecutar_pipeline():
+    ofr = ofertas.copy()
+    if niveles_sel:
+        ofr = ofr[ofr["Nivel"].isin(niveles_sel)].reset_index(drop=True)
+    ofr_rel = filtrar_ofertas_por_carrera(ofr, carrera, modelo)
+    demanda = construir_demanda(ofr_rel)
 
-st.subheader("📚 Paso 1 · Marca los cursos que ya dominas")
-st.caption("Elige los cursos cuyas habilidades ya conoces. Puedes seleccionar por ciclo o individualmente.")
+    # Skills del alumno = tokens de todos los cursos online ya completados
+    skills_online = skills_de_cursos_completados(st.session_state.completados, online)
 
-if sub_tech.empty:
-    st.warning("No hay cursos técnicos con skills predichos para esta carrera.")
+    gap_df = calcular_gap(demanda, sorted(skills_online), modelo)
+    recs   = recomendar_cursos(
+        online, gap_df, tfidf, X,
+        excluir_titulos=st.session_state.completados,
+        n_cursos=n_cursos,
+    )
+    st.session_state.gap_df    = gap_df
+    st.session_state.recs      = recs
+    st.session_state.idx_actual = 0
+
+# Calcular al arrancar (si no hay resultados aún)
+if st.session_state.recs is None:
+    with st.spinner("Calculando recomendaciones…"):
+        ejecutar_pipeline()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MOSTRAR MÉTRICAS DEL GAP
+# ─────────────────────────────────────────────────────────────────────────────
+gap_df = st.session_state.gap_df
+recs   = st.session_state.recs
+
+if gap_df is not None:
+    n_gap  = int(gap_df["es_gap"].sum())
+    n_comp = len(st.session_state.completados)
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Skills en el GAP",        n_gap)
+    m2.metric("Cursos online completados", n_comp)
+    m3.metric("Cursos recomendados",      len(recs) if recs is not None and not recs.empty else 0)
+
+    with st.expander("🔍 Ver top habilidades del GAP"):
+        top = gap_df[gap_df["es_gap"]].head(12)[["habilidad","demanda","cobertura","peso_gap"]]
+        top.columns = ["Habilidad","Demanda","Cobertura","Peso GAP"]
+        st.dataframe(top, hide_index=True, use_container_width=True)
+
+st.divider()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TARJETAS DE CURSOS — UNA A LA VEZ
+# ─────────────────────────────────────────────────────────────────────────────
+if recs is None or recs.empty:
+    st.success("🎉 ¡No hay más cursos que recomendar para este GAP! Prueba cambiando los filtros.")
     st.stop()
 
-# Agrupar por ciclo si existe
-tiene_ciclo = "ciclo" in sub_tech.columns
-grupos = sub_tech.groupby("ciclo") if tiene_ciclo else [("", sub_tech)]
+idx     = st.session_state.idx_actual
+total   = len(recs)
 
-nuevas_skills: set = set()
+if idx >= total:
+    st.success("🎉 Revisaste todos los cursos recomendados.")
+    if st.button("🔁 Calcular nuevas recomendaciones"):
+        with st.spinner("Recalculando…"):
+            ejecutar_pipeline()
+        st.rerun()
+    st.stop()
 
-with st.expander("Ver / ocultar malla completa", expanded=True):
-    for ciclo, grupo in grupos:
-        if tiene_ciclo:
-            col_header, col_todo = st.columns([5, 1])
-            with col_header:
-                st.markdown(f"**Ciclo {ciclo}**")
-            with col_todo:
-                todos_key = f"ciclo_todo_{ciclo}"
-                if st.checkbox("todos", key=todos_key, label_visibility="collapsed"):
-                    for _, r in grupo.iterrows():
-                        nuevas_skills.update(r["skills_predichos"])
+row = recs.iloc[idx]
 
-        for _, row in grupo.iterrows():
-            label = f"{row['curso']}  —  `{'`, `'.join(row['skills_predichos'])}`"
-            checked = st.checkbox(
-                label,
-                key=f"curso_{row['curso']}",
-                value=(row["curso"] in {
-                    c for c in st.session_state.get("_cursos_marcados", set())
-                }),
-            )
-            if checked:
-                nuevas_skills.update(row["skills_predichos"])
-                st.session_state.setdefault("_cursos_marcados", set()).add(row["curso"])
-            else:
-                st.session_state.setdefault("_cursos_marcados", set()).discard(row["curso"])
+titulo  = row["titulo"]
+portal  = str(row.get("portal",""))
+precio  = row.get("precio","No especificado")
+url     = str(row.get("url",""))
+score   = float(row.get("score", 0))
+gap_cub = row.get("gap_cubierto","—")
+desc    = str(row.get("descripcion",""))
 
-st.session_state.skills_marcadas = nuevas_skills
-
-# Resumen de skills dominadas
-n_dom = len(st.session_state.skills_marcadas)
-if n_dom:
-    st.success(f"✅ {n_dom} skill{'s' if n_dom>1 else ''} marcada{'s' if n_dom>1 else ''} como dominada{'s' if n_dom>1 else ''}.")
+# Badge de portal
+if "coursera" in portal.lower():
+    badge_portal = '<span class="pill pill-c">🟦 Coursera</span>'
 else:
-    st.info("Aún no marcaste ningún curso. Si no marcas nada, el GAP incluirá todas las habilidades demandadas.")
+    badge_portal = '<span class="pill pill-u">🟧 Udemy</span>'
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PASO 2: Recomendar
-# ─────────────────────────────────────────────────────────────────────────────
-st.divider()
-col_btn, col_info = st.columns([2, 5])
-with col_btn:
-    recomendar_btn = st.button("🚀 Recomendar cursos", type="primary", use_container_width=True)
+# Badge de precio
+if precio.lower() == "gratis":
+    badge_precio = '<span class="pill pill-p">🆓 Gratis</span>'
+else:
+    badge_precio = f'<span class="pill" style="background:#f1f5f9;color:#475569;">💰 {precio}</span>'
 
-if recomendar_btn:
-    with st.spinner("Calculando GAP y buscando cursos…"):
-        ofr = ofertas.copy()
-        if niveles_sel:
-            ofr = ofr[ofr["Nivel"].isin(niveles_sel)].reset_index(drop=True)
-        ofr_rel  = filtrar_ofertas_por_carrera(ofr, carrera, modelo)
-        demanda  = construir_demanda(ofr_rel)
-        gap_df   = calcular_gap(demanda, sorted(st.session_state.skills_marcadas), modelo)
-        recs     = recomendar_cursos(
-            online, gap_df, tfidf, X,
-            excluir_titulos=st.session_state.cursos_completados,
-            n_cursos=n_cursos,
-        )
-        st.session_state.recs    = recs
-        st.session_state.gap_df  = gap_df
-        st.session_state.info    = {
-            "skills_dominadas":       n_dom,
-            "ofertas_relevantes":     len(ofr_rel),
-            "habilidades_demandadas": len(demanda),
-            "gap":                    int(gap_df["es_gap"].sum()),
-        }
+link_html = f'<a href="{url}" target="_blank">🔗 Ver curso</a>' if url else ""
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PASO 3: Mostrar resultados
-# ─────────────────────────────────────────────────────────────────────────────
-if "recs" in st.session_state and st.session_state.recs is not None:
-    recs   = st.session_state.recs
-    gap_df = st.session_state.gap_df
-    info   = st.session_state.info
+pct = int(score * 100)
+skills_html = "".join(
+    f'<span class="pill pill-g">{s}</span>'
+    for s in gap_cub.split(", ") if s and s != "—"
+)
 
-    st.subheader("📊 Resumen del GAP")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Skills dominadas",        info["skills_dominadas"])
-    m2.metric("Ofertas analizadas",       info["ofertas_relevantes"])
-    m3.metric("Habilidades demandadas",   info["habilidades_demandadas"])
-    m4.metric("Skills en el GAP",         info["gap"])
+# Progreso
+st.markdown(f"**Curso {idx + 1} de {total}**")
+st.progress((idx + 1) / total)
 
-    with st.expander("🔍 Ver detalle del GAP (top 15 habilidades)"):
-        top_gap = gap_df[gap_df["es_gap"]].head(15)[
-            ["habilidad","demanda","cobertura","peso_gap"]
-        ].rename(columns={
-            "habilidad": "Habilidad", "demanda": "Demanda",
-            "cobertura": "Cobertura", "peso_gap": "Peso GAP",
-        })
-        st.dataframe(top_gap, use_container_width=True, hide_index=True)
-
-    st.divider()
-
-    if recs.empty:
-        st.warning("No se encontraron cursos para este GAP (prueba con menos cursos completados o cambia los filtros).")
-    else:
-        completados_actualizados = set(st.session_state.cursos_completados)
-        recalcular = False
-
-        st.subheader(f"🎯 Paso 2 · Cursos recomendados")
-        st.caption("Marca un curso como **completado** para actualizar las recomendaciones automáticamente.")
-
-        for _, row in recs.iterrows():
-            titulo   = row["titulo"]
-            portal   = str(row.get("portal", ""))
-            precio   = row.get("precio", "No especificado")
-            url      = row.get("url", "")
-            score    = float(row.get("score", 0))
-            gap_cub  = row.get("gap_cubierto", "—")
-            desc     = str(row.get("descripcion", ""))[:220] + "…"
-
-            ya_completado = titulo in st.session_state.cursos_completados
-            card_class    = "card card-done" if ya_completado else "card"
-
-            badge_portal = (
-                f'<span class="badge badge-coursera">🟦 Coursera</span>' if "coursera" in portal.lower()
-                else f'<span class="badge badge-udemy">🟧 Udemy</span>'
-            )
-            pct = int(score * 100)
-            link_html = (
-                f'<a href="{url}" target="_blank" style="font-size:0.8rem;">🔗 Ver curso</a>'
-                if url else ""
-            )
-
-            st.markdown(f"""
-<div class="{card_class}">
-  <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-    <div style="flex:1">
-      <strong style="font-size:1rem;">{titulo}</strong><br/>
-      {badge_portal}
-      <span style="font-size:0.8rem; color:#64748b;">💰 {precio}</span>
-      &nbsp;{link_html}
-      <div class="score-bar-wrap"><div class="score-bar" style="width:{pct}%"></div></div>
-      <span style="font-size:0.75rem; color:#64748b;">Relevancia: {score:.2f}</span>
-      &nbsp;&nbsp;
-      <span class="badge badge-gap">🎯 {gap_cub}</span>
-    </div>
+# Tarjeta
+st.markdown(f"""
+<div class="card">
+  <h3>{titulo}</h3>
+  <div style="margin:6px 0 10px;">
+    {badge_portal} {badge_precio} {link_html}
   </div>
-  <p style="font-size:0.82rem; color:#475569; margin: 0.5rem 0 0;">{desc}</p>
+  <div class="bar-bg"><div class="bar-fg" style="width:{pct}%"></div></div>
+  <span style="font-size:0.75rem;color:#64748b;">Relevancia para tu GAP: {score:.2f}</span>
+  <p style="margin:10px 0 6px;font-size:0.85rem;color:#334155;">{desc[:350]}…</p>
+  <div style="margin-top:8px;"><strong style="font-size:0.8rem;">Habilidades que cubre:</strong><br/>{skills_html if skills_html else '<span style="color:#94a3b8;font-size:0.8rem;">—</span>'}</div>
 </div>
 """, unsafe_allow_html=True)
 
-            completado_check = st.checkbox(
-                f"✅ Ya completé este curso",
-                key=f"completado_{titulo}",
-                value=ya_completado,
-            )
-            if completado_check and titulo not in st.session_state.cursos_completados:
-                st.session_state.cursos_completados.add(titulo)
-                recalcular = True
-            elif not completado_check and titulo in st.session_state.cursos_completados:
-                st.session_state.cursos_completados.discard(titulo)
-                recalcular = True
+# ── Botones de acción ──────────────────────────────────────────────────────
+st.markdown("#### ¿Ya conoces este curso o lo completaste?")
+col_si, col_no = st.columns(2)
 
-        # Si el usuario marcó/desmarcó algo → recalcular automáticamente
-        if recalcular:
-            with st.spinner("Actualizando recomendaciones…"):
-                ofr = ofertas.copy()
-                if niveles_sel:
-                    ofr = ofr[ofr["Nivel"].isin(niveles_sel)].reset_index(drop=True)
-                ofr_rel  = filtrar_ofertas_por_carrera(ofr, carrera, modelo)
-                demanda  = construir_demanda(ofr_rel)
+with col_si:
+    if st.button("✅ Ya lo sé / lo completé → siguiente", use_container_width=True, type="primary"):
+        st.session_state.completados.add(titulo)
+        st.session_state.idx_actual += 1
+        # Recalcular en segundo plano para que el siguiente curso ya refleje
+        # las skills ganadas con este curso completado
+        with st.spinner("Actualizando recomendaciones…"):
+            ejecutar_pipeline()
+        st.rerun()
 
-                # Skills que el alumno ya domina = malla + skills de cursos online completados
-                skills_extra = set()
-                for titulo_comp in st.session_state.cursos_completados:
-                    fila = online[online["titulo"] == titulo_comp]
-                    if not fila.empty:
-                        skills_extra.update(fila.iloc[0]["tokens"])
+with col_no:
+    if st.button("➡️ No lo conozco → guardar y ver siguiente", use_container_width=True):
+        st.session_state.idx_actual += 1
+        st.rerun()
 
-                skills_totales = st.session_state.skills_marcadas | skills_extra
-
-                gap_df_new = calcular_gap(demanda, sorted(skills_totales), modelo)
-                recs_new   = recomendar_cursos(
-                    online, gap_df_new, tfidf, X,
-                    excluir_titulos=st.session_state.cursos_completados,
-                    n_cursos=n_cursos,
-                )
-                st.session_state.recs   = recs_new
-                st.session_state.gap_df = gap_df_new
-                st.session_state.info["skills_dominadas"] = len(skills_totales)
-                st.session_state.info["gap"] = int(gap_df_new["es_gap"].sum())
-            st.rerun()
-
-        if st.session_state.cursos_completados:
-            st.divider()
-            st.markdown(f"**Cursos completados en esta sesión ({len(st.session_state.cursos_completados)}):**")
-            for t in sorted(st.session_state.cursos_completados):
-                st.markdown(f"- ~~{t}~~")
+# ── Lista de completados ───────────────────────────────────────────────────
+if st.session_state.completados:
+    st.divider()
+    with st.expander(f"📋 Cursos completados en esta sesión ({len(st.session_state.completados)})"):
+        for t in sorted(st.session_state.completados):
+            st.markdown(f"- ✅ {t}")
