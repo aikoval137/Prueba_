@@ -379,20 +379,19 @@ with st.sidebar:
             del st.session_state[k]
         st.rerun()
 
-# ── Resetear estado si cambia el perfil ───────────────────────────────────
 perfil_key = f"{univ}||{carrera}"
 if st.session_state.get("_perfil") != perfil_key:
-    completados_backup  = st.session_state.get("completados", set())
-    idx_backup          = st.session_state.get("idx_actual", 0)
-    por_llevar_backup   = st.session_state.get("por_llevar", [])   
-    
+    completados_backup = st.session_state.get("completados", set())
+    idx_backup         = st.session_state.get("idx_actual", 0)
+    por_llevar_backup  = st.session_state.get("por_llevar", [])   # ← NUEVO
+
     for k in list(st.session_state.keys()):
         del st.session_state[k]
-    
+
     st.session_state["_perfil"]     = perfil_key
     st.session_state["completados"] = completados_backup
     st.session_state["idx_actual"]  = idx_backup
-    st.session_state["por_llevar"]  = por_llevar_backup            
+    st.session_state["por_llevar"]  = por_llevar_backup            # ← NUEVO         
 
 # Inicializar estado
 if "completados"    not in st.session_state:
